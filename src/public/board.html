@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Simple Imageboard Test - /b/</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: auto; padding: 1em; }
+  form { margin-bottom: 2em; }
+  label { display: block; margin-top: 0.5em; }
+  input, textarea { width: 100%; padding: 0.3em; box-sizing: border-box; }
+  .post, .reply { border: 1px solid #ccc; margin-bottom: 1em; padding: 0.5em; }
+  .replies { margin-left: 1em; }
+  .captcha-container { margin-top: 1em; }
+</style>
+</head>
+<body>
+
+<h1>/b/ - Simple Imageboard Test</h1>
+
+<form id="postForm">
+  <h2>New Post</h2>
+  <label>Name: <input type="text" name="name" value="Anonymous" /></label>
+  <label>Subject: <input type="text" name="subject" /></label>
+  <label>Content:<textarea name="content" rows="4"></textarea></label>
+  <label>Email: <input type="email" name="email" /></label>
+  <div class="captcha-container" id="captchaContainer"></div>
+  <button type="submit">Post</button>
+</form>
+
+<div id="posts"></div>
+
+<script type="module">
+  import Captcha from './Captcha.js';
+
+  async function PostTo(board, data) {
+    const response = await fetch(`/${board}/post`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error('Failed to post');
+    return await response.json();
+  }
+
+  async function ReplyTo(board, data) {
+    const response = await fetch(`/${board}/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error('Failed to reply');
+    return await response.json();
+  }
+
+  async function FetchPosts(board) {
+    const response = await fetch(`/${board}/posts`);
+    if (!response.ok) throw new Error('Failed to fetch posts');
+    return await response.json();
+  }
+
+  const board = 'b';
+  const captcha = new Captcha('');
+
+  const postForm = document.getElementById('postForm');
+  const captchaContainer = document.getElementById('captchaContainer');
+  const postsContainer = document.getElementById('posts');
+
+  async function loadCaptcha() {
+    await captcha.load();
+    captcha.render(captchaContainer);
+  }
+
+  function renderPosts(posts) {
+    postsContainer.innerHTML = '';
+    for (const post of posts) {
+      const postDiv = document.createElement('div');
+      postDiv.className = 'post';
+      postDiv.innerHTML = `
+        <strong>${escapeHtml(post.subject)} - ${escapeHtml(post.name)}</strong><br/>
+        <p>${escapeHtml(post.content)}</p>
+        <small>Email: ${escapeHtml(post.email)}</small>
+        <div class="replies"></div>
+        <button data-pid="${post.pid}">Reply</button>
+      `;
+      const repliesDiv = postDiv.querySelector('.replies');
+      for (const reply of post.replies) {
+        const replyDiv = document.createElement('div');
+        replyDiv.className = 'reply';
+        replyDiv.innerHTML = `
+          <strong>${escapeHtml(reply.subject)} - ${escapeHtml(reply.name)}</strong><br/>
+          <p>${escapeHtml(reply.content)}</p>
+          <small>Email: ${escapeHtml(reply.email)}</small>
+        `;
+        repliesDiv.appendChild(replyDiv);
+      }
+      postsContainer.appendChild(postDiv);
+
+      const replyButton = postDiv.querySelector('button');
+      replyButton.addEventListener('click', () => openReplyForm(post.pid, repliesDiv));
+    }
+  }
+
+  function openReplyForm(parentId, container) {
+    if (container.querySelector('form')) return;
+
+    const form = document.createElement('form');
+    form.innerHTML = `
+      <label>Name: <input type="text" name="name" value="Anonymous" /></label>
+      <label>Subject: <input type="text" name="subject" /></label>
+      <label>Content:<textarea name="content" rows="3"></textarea></label>
+      <label>Email: <input type="email" name="email" /></label>
+      <div class="captcha-container"></div>
+      <button type="submit">Submit Reply</button>
+      <button type="button" class="cancel">Cancel</button>
+    `;
+    container.appendChild(form);
+
+    const captchaDiv = form.querySelector('.captcha-container');
+    const replyCaptcha = new Captcha('');
+    replyCaptcha.load().then(() => replyCaptcha.render(captchaDiv));
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const formData = new FormData(form);
+      const data = {
+        name: formData.get('name') || 'Anonymous',
+        subject: formData.get('subject') || '',
+        content: formData.get('content') || '',
+        email: formData.get('email') || '',
+        parentId,
+        captchaId: form.querySelector('input[name="captchaId"]').value,
+        captchaAnswer: form.querySelector('input[name="captchaAnswer"]').value
+      };
+      try {
+        await ReplyTo(board, data);
+        await refreshPosts();
+        form.remove();
+      } catch (err) {
+        alert(err.message || 'Failed to submit reply');
+      }
+    });
+
+    form.querySelector('.cancel').addEventListener('click', () => form.remove());
+  }
+
+  postForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const formData = new FormData(postForm);
+    const data = {
+      name: formData.get('name') || 'Anonymous',
+      subject: formData.get('subject') || '',
+      content: formData.get('content') || '',
+      email: formData.get('email') || '',
+      captchaId: postForm.querySelector('input[name="captchaId"]').value,
+      captchaAnswer: postForm.querySelector('input[name="captchaAnswer"]').value
+    };
+    try {
+      await PostTo(board, data);
+      postForm.reset();
+      await loadCaptcha();
+      await refreshPosts();
+    } catch (err) {
+      alert(err.message || 'Failed to submit post');
+    }
+  });
+
+  async function refreshPosts() {
+    try {
+      const posts = await FetchPosts(board);
+      renderPosts(posts);
+    } catch {
+      postsContainer.innerHTML = '<p>Failed to load posts.</p>';
+    }
+  }
+
+  function escapeHtml(text) {
+    return text.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  }
+
+  (async () => {
+    await loadCaptcha();
+    await refreshPosts();
+  })();
+
+</script>
+
+</body>
+</html>
